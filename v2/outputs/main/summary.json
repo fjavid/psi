@@ -1,0 +1,12 @@
+{
+  "train_frac": 0.35,
+  "weight_decay": 0.03,
+  "n_steps": 50000,
+  "lr": 0.0003,
+  "t_train_99": 200,
+  "t_test_95": null,
+  "tau_g": null,
+  "final_train_acc": 1.0,
+  "final_test_acc": 0.3458142578601837,
+  "status": "memorized_not_generalized"
+}
