@@ -1,0 +1,9 @@
+train_frac,weight_decay,mean_tau_g,std_tau_g,mean_final_train_acc,mean_final_test_acc,grokking_successes,immediate_successes,no_generalization_count,no_memorization_count,n_runs,majority_status
+0.35,0.1,50000.0,0.0,1.0,0.3462502559026082,0,0,3,0,3,no_generalization
+0.35,0.3,50000.0,0.0,1.0,0.6023544470469157,0,0,3,0,3,no_generalization
+0.4,0.1,50000.0,0.0,1.0,0.40311723947525024,0,0,3,0,3,no_generalization
+0.4,0.3,28750.0,1750.0,1.0,1.0,3,0,0,0,3,delayed_generalization
+0.45,0.1,50000.0,0.0,1.0,0.5519484678904215,0,0,3,0,3,no_generalization
+0.45,0.3,21083.333333333332,2982.5883613622136,1.0,1.0,3,0,0,0,3,delayed_generalization
+0.5,0.1,47333.333333333336,4193.248541803041,1.0,0.9536662896474203,2,0,1,0,3,delayed_generalization
+0.5,0.3,16250.0,,1.0,1.0,1,0,0,0,1,delayed_generalization
