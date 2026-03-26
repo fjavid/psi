@@ -1,139 +1,159 @@
-"""
-Phase 3: Small ablation — train fraction × weight decay phase diagram.
-
-Scaled down to be practical:
-  - 4 train fractions × 4 weight decays = 16 runs
-  - 15k steps each (enough to see if grokking starts or not)
-  - Single seed
-
-Reads lr and grad_clip from outputs/pilot_config.json if available.
-"""
-
-import numpy as np
-import json
+import argparse
 import os
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
-from matplotlib.patches import Patch
+import numpy as np
+import pandas as pd
 
-from grokking_utils import (
-    P, DEVICE, OUT_DIR, make_dataset, train_run, grokking_stats, savefig
+from grokking_common import (
+    DEVICE,
+    TrainConfig,
+    ensure_dir,
+    find_first_step,
+    make_dataset,
+    plot_phase_diagram,
+    save_json,
+    train_run,
 )
 
-ABLATION_FRACS = [0.3, 0.4, 0.5]
-ABLATION_WDS = [0.0, 0.1, 1.0]
-ABLATION_STEPS = 5_000
-ABLATION_SEED = 42
+DEFAULT_OUT = "outputs/ablation"
 
 
-def load_config():
-    path = os.path.join(OUT_DIR, 'pilot_config.json')
-    if os.path.exists(path):
-        with open(path) as f:
-            return json.load(f)
-    return dict(lr=3e-4, grad_clip=1.0)
+def summarize_run(metrics, max_steps):
+    s = np.array(metrics["step"])
+    tr = np.array(metrics["train_acc"])
+    te = np.array(metrics["test_acc"])
+
+    t99 = find_first_step(s, tr, 0.99)
+    t95 = find_first_step(s, te, 0.95)
+
+    if t99 is None:
+        delay = -1
+        status = "no_memorization"
+    elif t95 is None:
+        delay = max_steps
+        status = "no_generalization"
+    else:
+        delay = t95 - t99
+        status = "delayed_generalization" if delay >= 500 else "immediate_generalization"
+
+    return {
+        "t_train_99": t99,
+        "t_test_95": t95,
+        "tau_g": delay,
+        "final_train_acc": float(tr[-1]),
+        "final_test_acc": float(te[-1]),
+        "status": status,
+    }
+
+
+def majority_vote(series):
+    return series.value_counts().idxmax()
 
 
 def main():
-    print(f'Device: {DEVICE}')
-    cfg = load_config()
-    lr = cfg.get('lr', 3e-4)
-    gc = cfg.get('grad_clip', 1.0)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--out_dir", type=str, default=DEFAULT_OUT)
+    parser.add_argument("--steps", type=int, default=50000)
+    parser.add_argument("--fracs", type=float, nargs="+", default=[0.35, 0.40, 0.45, 0.50])
+    parser.add_argument("--wds", type=float, nargs="+", default=[0.1, 0.3, 0.5, 1.0])
+    parser.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
+    parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--eval_every", type=int, default=250)
+    parser.add_argument("--grad_clip", type=float, default=1.0)
+    args = parser.parse_args()
 
-    print(f'\n{"="*60}')
-    print(f'Ablation: {len(ABLATION_FRACS)} fracs × {len(ABLATION_WDS)} wds = '
-          f'{len(ABLATION_FRACS)*len(ABLATION_WDS)} runs @ {ABLATION_STEPS} steps')
-    print(f'lr={lr}, grad_clip={gc}')
-    print(f'{"="*60}')
+    ensure_dir(args.out_dir)
+    print(f"Device: {DEVICE}")
 
-    phase = np.full((len(ABLATION_WDS), len(ABLATION_FRACS)), np.nan)
+    per_seed_rows = []
 
-    for i, wd in enumerate(ABLATION_WDS):
-        for j, frac in enumerate(ABLATION_FRACS):
-            trx, try_, tex, tey, *_ = make_dataset(P, frac, seed=ABLATION_SEED)
-            _, m, _, _ = train_run(
-                trx, try_, tex, tey,
-                n_steps=ABLATION_STEPS, lr=lr, wd=wd, seed=ABLATION_SEED,
-                log_every=50, probe_every=ABLATION_STEPS + 1,
-                grad_clip=gc, verbose=False,
-            )
-            t_tr, t_te, tau = grokking_stats(m)
-            if t_tr is not None and t_te is not None:
-                delay = t_te - t_tr
-            elif t_tr is not None:
-                delay = ABLATION_STEPS  # memorized but never generalized
-            else:
-                delay = -1  # didn't even memorize
+    for wd in args.wds:
+        for frac in args.fracs:
+            for seed in args.seeds:
+                print(f"\nRunning frac={frac}, wd={wd}, seed={seed}")
 
-            phase[i, j] = delay
-            tag = f'τ={delay}' if delay >= 0 else 'no mem'
-            print(f'  frac={frac:.1f}  wd={wd:<5}  train={m["train_acc"][-1]:.3f}  '
-                  f'test={m["test_acc"][-1]:.3f}  {tag}')
+                ds = make_dataset(97, frac, seed=seed)
 
-    # ── Phase diagram plots ───────────────────────────────────
-    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+                cfg = TrainConfig(
+                    train_frac=frac,
+                    data_seed=seed,
+                    model_seed=seed,
+                    n_steps=args.steps,
+                    lr=args.lr,
+                    weight_decay=wd,
+                    eval_every=args.eval_every,
+                    probe_every=args.steps + 1,
+                    grad_clip=args.grad_clip,
+                )
 
-    # Continuous delay
-    ax = axes[0]
-    dd = phase.copy()
-    dd[dd < 0] = np.nan
-    valid = dd[dd > 0]
-    vmin = max(1, np.nanmin(valid)) if len(valid) > 0 else 1
-    im = ax.imshow(dd, cmap='magma_r', aspect='auto',
-                   norm=mcolors.LogNorm(vmin=vmin, vmax=ABLATION_STEPS))
-    ax.set_xticks(range(len(ABLATION_FRACS)))
-    ax.set_xticklabels([f'{f:.0%}' for f in ABLATION_FRACS])
-    ax.set_yticks(range(len(ABLATION_WDS)))
-    ax.set_yticklabels([str(w) for w in ABLATION_WDS])
-    ax.set_xlabel('Train Fraction'); ax.set_ylabel('Weight Decay')
-    ax.set_title('Grokking Delay τ_g (steps)')
-    plt.colorbar(im, ax=ax, shrink=0.8, label='τ_g')
-    for i in range(len(ABLATION_WDS)):
-        for j in range(len(ABLATION_FRACS)):
-            v = phase[i, j]
-            txt = 'N/M' if v < 0 else ('N/G' if v >= ABLATION_STEPS else f'{int(v)}')
-            ax.text(j, i, txt, ha='center', va='center', fontsize=9,
-                    color='white' if (v > 5000 or v < 0) else 'black')
+                _, metrics, _, _ = train_run(
+                    ds,
+                    cfg,
+                    collect_fourier=False,
+                    verbose=False,
+                )
 
-    # Regime classification
-    ax = axes[1]
-    regime = np.zeros_like(phase)
-    regime[phase < 0] = 0                                          # no memorization
-    regime[(phase >= 0) & (phase < 500)] = 1                       # immediate
-    regime[(phase >= 500) & (phase < ABLATION_STEPS)] = 2          # grokking
-    regime[phase >= ABLATION_STEPS] = 3                            # no gen
-    cmap_r = mcolors.ListedColormap(['#9e9e9e', '#4caf50', '#ff9800', '#d32f2f'])
-    ax.imshow(regime, cmap=cmap_r, aspect='auto', vmin=0, vmax=3)
-    ax.set_xticks(range(len(ABLATION_FRACS)))
-    ax.set_xticklabels([f'{f:.0%}' for f in ABLATION_FRACS])
-    ax.set_yticks(range(len(ABLATION_WDS)))
-    ax.set_yticklabels([str(w) for w in ABLATION_WDS])
-    ax.set_xlabel('Train Fraction'); ax.set_ylabel('Weight Decay')
-    ax.set_title('Grokking Regimes')
-    ax.legend(handles=[
-        Patch(facecolor='#9e9e9e', label='No memorization'),
-        Patch(facecolor='#4caf50', label='Immediate gen. (τ<500)'),
-        Patch(facecolor='#ff9800', label='Grokking (500≤τ<15k)'),
-        Patch(facecolor='#d32f2f', label='No generalization'),
-    ], loc='upper left', fontsize=9)
+                summary = summarize_run(metrics, args.steps)
 
-    fig.suptitle('Train Fraction × Weight Decay Phase Diagram', fontsize=14, y=1.02)
-    fig.tight_layout()
-    savefig(fig, 'phase_diagram.png')
+                row = {
+                    "train_frac": frac,
+                    "weight_decay": wd,
+                    "seed": seed,
+                    **summary,
+                }
+                per_seed_rows.append(row)
+                print(row)
 
-    # Save raw data
-    with open(os.path.join(OUT_DIR, 'ablation_results.json'), 'w') as f:
-        json.dump(dict(
-            fracs=ABLATION_FRACS, wds=ABLATION_WDS,
-            phase_diagram=phase.tolist(),
-            steps=ABLATION_STEPS,
-        ), f, indent=2)
+    per_seed_df = pd.DataFrame(per_seed_rows)
+    per_seed_path = os.path.join(args.out_dir, "ablation_results_per_seed.csv")
+    per_seed_df.to_csv(per_seed_path, index=False)
 
-    print(f'\nPhase diagram saved to {OUT_DIR}/phase_diagram.png')
-    print('Done.')
+    # Aggregate across seeds
+    grouped = (
+        per_seed_df.groupby(["train_frac", "weight_decay"], as_index=False)
+        .agg(
+            mean_tau_g=("tau_g", "mean"),
+            std_tau_g=("tau_g", "std"),
+            mean_final_train_acc=("final_train_acc", "mean"),
+            mean_final_test_acc=("final_test_acc", "mean"),
+            grokking_successes=("status", lambda x: int((x == "delayed_generalization").sum())),
+            immediate_successes=("status", lambda x: int((x == "immediate_generalization").sum())),
+            no_generalization_count=("status", lambda x: int((x == "no_generalization").sum())),
+            no_memorization_count=("status", lambda x: int((x == "no_memorization").sum())),
+            n_runs=("seed", "count"),
+        )
+    )
+
+    status_df = (
+        per_seed_df.groupby(["train_frac", "weight_decay"])["status"]
+        .agg(majority_vote)
+        .reset_index(name="majority_status")
+    )
+    grouped = grouped.merge(status_df, on=["train_frac", "weight_decay"], how="left")
+
+    grouped_path = os.path.join(args.out_dir, "ablation_results_grouped.csv")
+    grouped.to_csv(grouped_path, index=False)
+
+    # Plot using grouped results
+    plot_phase_diagram(grouped, args.fracs, args.wds, args.steps, args.out_dir)
+
+    save_json(
+        {
+            "steps": args.steps,
+            "fracs": args.fracs,
+            "wds": args.wds,
+            "seeds": args.seeds,
+            "lr": args.lr,
+            "eval_every": args.eval_every,
+            "grad_clip": args.grad_clip,
+        },
+        os.path.join(args.out_dir, "ablation_config.json"),
+    )
+
+    print("\nSaved outputs to", args.out_dir)
+    print("Per-seed CSV:", per_seed_path)
+    print("Grouped CSV:", grouped_path)
+    print("Phase diagram:", os.path.join(args.out_dir, "phase_diagram.png"))
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

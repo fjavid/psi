@@ -1,22 +1,11 @@
 # Core ML / numerics
 torch>=2.2.0
-torchvision>=0.17.0
 numpy>=2.0.0
 scikit-learn>=1.4.0
 pandas>=2.2.0
-scipy>=1.13.0
-
-# Reinforcement learning
-gymnasium>=1.0.0
 
 # Plotting
 matplotlib>=3.7.0
-seaborn>=0.13.0
 
-# Utilities (images with torchvision, progress bars, configs)
-Pillow>=10.0.0
+# Utilities
 tqdm>=4.66.0
-PyYAML>=6.0.0
-
-# Notebooks (run: jupyter lab)
-jupyterlab>=4.0.0

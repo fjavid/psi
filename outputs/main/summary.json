@@ -1,0 +1,12 @@
+{
+  "train_frac": 0.4,
+  "weight_decay": 0.3,
+  "n_steps": 100000,
+  "lr": 0.0003,
+  "t_train_99": 200,
+  "t_test_95": 43200,
+  "tau_g": 43000,
+  "final_train_acc": 1.0,
+  "final_test_acc": 1.0,
+  "status": "grokking_observed"
+}

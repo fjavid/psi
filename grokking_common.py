@@ -648,43 +648,97 @@ def plot_operation_tables(
     save_fig(fig, os.path.join(out_dir, "operation_tables_split.png"))
 
 
-def plot_phase_diagram(phase_diagram: np.ndarray, fracs, wds, max_steps: int, out_dir: str):
-    fig, axes = plt.subplots(1, 2, figsize=(18, 6))
+def plot_phase_diagram(grouped_df, fracs, wds, max_steps: int, out_dir: str):
+    """
+    grouped_df must contain columns:
+      - train_frac
+      - weight_decay
+      - mean_tau_g
+      - std_tau_g
+      - majority_status
+      - grokking_successes
+      - n_runs
+    """
+    import numpy as np
+    import matplotlib.colors as mcolors
+    from matplotlib.patches import Patch
 
+    # Numeric heatmap uses mean tau_g
+    phase = np.full((len(wds), len(fracs)), np.nan, dtype=float)
+    regime = np.zeros((len(wds), len(fracs)), dtype=int)
+    annotations = [["" for _ in fracs] for _ in wds]
+
+    status_to_regime = {
+        "no_memorization": 0,
+        "immediate_generalization": 1,
+        "delayed_generalization": 2,
+        "no_generalization": 3,
+    }
+
+    for i, wd in enumerate(wds):
+        for j, frac in enumerate(fracs):
+            row = grouped_df[
+                (grouped_df["train_frac"] == frac) &
+                (grouped_df["weight_decay"] == wd)
+            ]
+            if len(row) == 0:
+                continue
+
+            row = row.iloc[0]
+            phase[i, j] = row["mean_tau_g"]
+            regime[i, j] = status_to_regime.get(row["majority_status"], 0)
+
+            mean_tau = row["mean_tau_g"]
+            std_tau = row["std_tau_g"]
+            succ = int(row["grokking_successes"])
+            n_runs = int(row["n_runs"])
+            status = row["majority_status"]
+
+            if status == "no_memorization":
+                tau_txt = "N/M"
+            elif status == "no_generalization":
+                tau_txt = "N/G"
+            else:
+                tau_txt = f"{int(mean_tau)}"
+
+            std_txt = "NA" if np.isnan(std_tau) else f"{int(std_tau)}"
+            annotations[i][j] = f"{tau_txt}\n{succ}/{n_runs} seeds\n±{std_txt}"
+
+    fig, axes = plt.subplots(1, 2, figsize=(18, 7))
+
+    # Left: mean tau_g heatmap
     ax = axes[0]
-    dd = phase_diagram.copy().astype(float)
-    dd[dd < 0] = np.nan
+    dd = phase.copy()
+    dd[np.isnan(dd)] = np.nan
+
     valid = dd[np.isfinite(dd) & (dd > 0)]
-    vmin = max(1, np.nanmin(valid)) if len(valid) else 1
-    im = ax.imshow(dd, cmap="magma_r", aspect="auto", norm=mcolors.LogNorm(vmin=vmin, vmax=max_steps))
+    if len(valid) > 0:
+        vmin = max(1, np.nanmin(valid))
+        vmax = max_steps
+        norm = mcolors.LogNorm(vmin=vmin, vmax=vmax)
+        im = ax.imshow(dd, cmap="magma_r", aspect="auto", norm=norm)
+    else:
+        im = ax.imshow(np.nan_to_num(dd, nan=0.0), cmap="magma_r", aspect="auto")
+
     ax.set_xticks(range(len(fracs)))
     ax.set_xticklabels([f"{f:.0%}" for f in fracs])
     ax.set_yticks(range(len(wds)))
     ax.set_yticklabels([str(w) for w in wds])
     ax.set_xlabel("Train Fraction")
     ax.set_ylabel("Weight Decay")
-    ax.set_title("Grokking Delay τ_g")
-    plt.colorbar(im, ax=ax, shrink=0.8)
+    ax.set_title("Mean Grokking Delay τ_g")
+    plt.colorbar(im, ax=ax, shrink=0.8, label="Mean τ_g")
+
     for i in range(len(wds)):
         for j in range(len(fracs)):
-            val = phase_diagram[i, j]
-            txt = "N/M" if val < 0 else ("N/G" if val >= max_steps else f"{int(val)}")
-            ax.text(
-                j,
-                i,
-                txt,
-                ha="center",
-                va="center",
-                fontsize=8,
-                color="white" if val > max_steps / 3 or val < 0 else "black",
-            )
+            txt = annotations[i][j]
+            val = phase[i, j]
+            color = "white" if (np.isfinite(val) and val > max_steps / 4) else "black"
+            if "N/M" in txt or "N/G" in txt:
+                color = "white"
+            ax.text(j, i, txt, ha="center", va="center", fontsize=8, color=color)
 
-    regime = np.zeros_like(phase_diagram, dtype=int)
-    regime[phase_diagram < 0] = 0
-    regime[(phase_diagram >= 0) & (phase_diagram < 500)] = 1
-    regime[(phase_diagram >= 500) & (phase_diagram < max_steps)] = 2
-    regime[phase_diagram >= max_steps] = 3
-
+    # Right: regime map
     ax = axes[1]
     cmap = mcolors.ListedColormap(["#9e9e9e", "#4caf50", "#ff9800", "#d32f2f"])
     ax.imshow(regime, cmap=cmap, aspect="auto", vmin=0, vmax=3)
@@ -694,7 +748,29 @@ def plot_phase_diagram(phase_diagram: np.ndarray, fracs, wds, max_steps: int, ou
     ax.set_yticklabels([str(w) for w in wds])
     ax.set_xlabel("Train Fraction")
     ax.set_ylabel("Weight Decay")
-    ax.set_title("Regime Map")
+    ax.set_title("Majority Regime")
+
+    short_status = {
+        "no_memorization": "N/M",
+        "immediate_generalization": "IMM",
+        "delayed_generalization": "DELAY",
+        "no_generalization": "N/G",
+    }
+
+    for i, wd in enumerate(wds):
+        for j, frac in enumerate(fracs):
+            row = grouped_df[
+                (grouped_df["train_frac"] == frac) &
+                (grouped_df["weight_decay"] == wd)
+            ]
+            if len(row) == 0:
+                continue
+            row = row.iloc[0]
+            succ = int(row["grokking_successes"])
+            n_runs = int(row["n_runs"])
+            label = short_status.get(row["majority_status"], "?")
+            ax.text(j, i, f"{label}\n{succ}/{n_runs}", ha="center", va="center", fontsize=9, color="black")
+
     ax.legend(
         handles=[
             Patch(facecolor="#9e9e9e", label="No memorization"),
@@ -705,5 +781,7 @@ def plot_phase_diagram(phase_diagram: np.ndarray, fracs, wds, max_steps: int, ou
         loc="upper left",
         fontsize=9,
     )
+
+    fig.suptitle("Local Ablation Around the Grokking Regime", fontsize=15, y=1.02)
     fig.tight_layout()
     save_fig(fig, os.path.join(out_dir, "phase_diagram.png"))

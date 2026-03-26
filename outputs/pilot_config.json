@@ -1,6 +1,0 @@
-{
-  "train_frac": 0.3,
-  "weight_decay": 0.06,
-  "lr": 0.0003,
-  "grad_clip": 1.0
-}
