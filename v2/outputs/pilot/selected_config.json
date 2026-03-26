@@ -1,0 +1,6 @@
+{
+  "train_frac": 0.4,
+  "weight_decay": 0.03,
+  "pilot_steps": 10000,
+  "selection_note": "Chosen by pilot score: high train acc, nontrivial but not immediate held-out acc, positive held-out trend."
+}

@@ -1,0 +1,6 @@
+{
+    "train_frac": 0.4,
+    "weight_decay": 0.034,
+    "pilot_steps": 10000,
+    "selection_note": "Modified config to test if the model can grok with a weight decay of 0.034."
+  }
